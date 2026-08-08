@@ -1,0 +1,4 @@
+aws_region   = "REGIONXXX"
+aws_profile  = "PROFILEXXX"
+project_name = "NAMEXXX"
+environment  = "ENVXXX"

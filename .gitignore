@@ -12,3 +12,4 @@ crash.log
 
 # Lambda packaging
 *.zip
+build/
