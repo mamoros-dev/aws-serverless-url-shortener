@@ -1,167 +1,143 @@
 # AWS Serverless URL Shortener
 
-+ API serverless de acortador de URLs construida con AWS Lambda, API Gateway (HTTP API) y DynamoDB, provisionada íntegramente con Terraform desde el inicio.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Dependabot](https://img.shields.io/badge/Dependabot-active-0288d1?logo=dependabot)](./.github/dependabot.yml)
 
-## Arquitectura
+🇪🇸 [Spanish version and more info](./docs/es/README-es.md)  
+
++ Serverless URL shortener API (Lambda + API Gateway + DynamoDB), fully deployed with Terraform. When someone creates a short link, the system stores it; when someone visits it, it redirects to the original URL and counts the click. Project 3 of an AWS/Terraform portfolio series.
+
+
+## Table of contents
+
+- [Architecture Decisions](#architecture-decisions)
+- [Infrastructure Verification](#infrastructure-verification)
+- [How to install and run the project](#how-to-install-and-run-the-project)
+- [How to use the project](#how-to-use-the-project)`
+- [Stack](#stack)
+- [Status](#status)
+- [Author](#author)
+
+## Architecture Decisions
+
++ Decisions:
+  * **Fully Serverless & Pay-as-You-Go:** Leverages AWS Lambda and API Gateway to eliminate compute idle costs and scale automatically from zero to high demand.
+  * **Low-Latency NoSQL Storage:** Uses Amazon DynamoDB with single-table design to achieve millisecond response times for URL key lookups and analytics tracking.
+  * **Decoupled API Tier:** Amazon API Gateway manages HTTP endpoints, request validation, CORS, and rate limiting directly at the edge before triggering Lambda execution.
+  * **Least-Privilege IAM Roles:** Lambda execution roles are granted fine-grained IAM permissions, restricted strictly to DynamoDB `GetItem` and `PutItem` operations on the specific table ARN.
 
 ![Arquitectura](docs/images/diagrama.png)
-> Cliente → API Gateway (HTTP API) → Lambda (Python) → DynamoDB, con un rol IAM de permisos mínimos entre Lambda y DynamoDB, y CloudWatch Logs recogiendo tanto el acceso a la API como la ejecución de la función.
+> Client → API Gateway (HTTP API) → Lambda (Python) → DynamoDB, with an IAM role with minimal permissions between Lambda and DynamoDB, and CloudWatch Logs recording both API access and function execution.
 
-**Flujo de una petición:**
+**Request Flow:**
+1. The client sends an HTTP request to the API’s public URL.
+2. API Gateway receives the request and forwards it to the Lambda function via an `AWS_PROXY` integration.
+3. The Lambda function, running under a scoped IAM role, processes the request:
+   - `POST /links` → generates a short code and stores it in DynamoDB.
+   - `GET /{short_code}` → looks up the code, incrementally updates the click counter atomically, and returns a `301` redirect to the original URL.
+4. DynamoDB stores and returns the data.
+5. CloudWatch Logs records each request and any execution errors.
 
-1. El cliente hace una petición HTTP a la URL pública de la API.
-2. API Gateway recibe la petición y la reenvía a la Lambda mediante una integración `AWS_PROXY`.
-3. La Lambda, bajo un rol IAM scoped, procesa la petición:
-   - `POST /links` → genera un código corto y lo guarda en DynamoDB.
-   - `GET /{short_code}` → busca el código, incrementa el contador de clics de forma atómica, y devuelve una redirección `301` a la URL original.
-4. DynamoDB almacena y devuelve los datos.
-5. CloudWatch Logs registra cada petición y cualquier error de ejecución.
 
-## Cómo está montado
-
-+ Todo el proyecto se provisiona con Terraform de principio a fin, sin ningún paso manual por consola:
-
-- **Backend remoto**: reutiliza el bucket S3 (`miguel-terraform-state-proyecto2`) y la tabla de locks (`terraform-locks-proyecto2`) del Proyecto 2, aislando el state de este proyecto con `key = "proyecto3/terraform.tfstate"`.
-- **`aws_dynamodb_table`**: tabla `links`, partition key `short_code`, modo `PAY_PER_REQUEST`, sin sort key.
-- **`aws_iam_role` + `aws_iam_role_policy`**: rol de ejecución de Lambda con trust policy hacia `lambda.amazonaws.com` y permisos scoped a `GetItem`/`PutItem`/`UpdateItem` sobre el ARN exacto de la tabla, más `AWSLambdaBasicExecutionRole` para logs.
-- **`archive_file` + `aws_lambda_function`**: código Python empaquetado automáticamente en un zip por Terraform, con `source_code_hash` para detectar cambios de código en cada `apply`.
-- **`aws_apigatewayv2_api`**: HTTP API, protocolo `HTTP`.
-- **`aws_apigatewayv2_integration`**: integración `AWS_PROXY` hacia la Lambda, con `payload_format_version = "1.0"`.
-- **`aws_lambda_permission`**: permiso explícito para que API Gateway pueda invocar la función.
-- **`aws_apigatewayv2_route`**: dos rutas, `POST /links` y `GET /{short_code}`, ambas apuntando a la misma integración.
-- **`aws_apigatewayv2_stage`**: stage `$default` con `auto_deploy = true` y `access_log_settings` hacia un log group de CloudWatch con retención de 7 días.
-
-+ Estructura de ficheros:
-  ```
-  aws-serverless-url-shortener/
-  ├── providers.tf
-  ├── backend.tf
-  ├── variables.tf
-  ├── terraform.tfvars.example
-  ├── dynamodb.tf
-  ├── iam.tf
-  ├── lambda.tf
-  ├── api_gateway.tf
-  ├── api_gateway_stage.tf
-  ├── outputs.tf
-  ├── lambda/
-  │   └── url_shortener/
-  │       └── handler.py
-  └── docs/
-  ```
-
-## Por qué lo monté así
-
-+ **HTTP API en vez de REST API**: hasta un 70% más barato, más simple de configurar, y con `auto_deploy = true` no necesita gestión manual de deployments (a diferencia de REST API, que sí la requiere). Para una API sin API keys ni planes de uso, es la opción con mejor relación coste/complejidad.
-
-+ **`PAY_PER_REQUEST` en DynamoDB**: el tráfico de un proyecto de portfolio es impredecible y mayormente nulo. Pagar por capacidad provisionada fija no tendría sentido aquí; en un entorno con tráfico estable y conocido, `PROVISIONED` con autoscaling puede salir más barato a largo plazo.
-
-+ **Una única Lambda con enrutado interno ("fat Lambda")** en vez de una función por endpoint: con solo dos operaciones, separar en dos Lambdas añadía complejidad de despliegue (dos `archive_file`, dos integraciones) sin beneficio real. El patrón de una Lambda por ruta gana sentido en APIs con muchos endpoints gestionados por equipos distintos.
-
-+ **`short_code` como partition key**: el patrón de acceso principal es "dado un código corto, obtener la URL larga" — una lectura directa por clave, la operación más eficiente en DynamoDB. La clave se diseña según cómo se va a consultar el dato, no según una convención de ID genérica.
-
-+ **Contador de clics con `UpdateExpression = "ADD"`**: en vez de leer el valor, sumarle 1 en el código y volver a guardarlo (lo que generaría condiciones de carrera con tráfico concurrente), se usa el incremento atómico nativo de DynamoDB — la operación es segura aunque lleguen miles de peticiones simultáneas al mismo `short_code`.
-
-+ **Backend remoto compartido con Proyecto 2**: simula el patrón habitual en empresas de una cuenta de "shared services" con backend de Terraform centralizado, donde cada proyecto aísla su state mediante una `key` distinta dentro del mismo bucket, en vez de duplicar bucket y tabla de locks por proyecto.
-
-## Infraestructura desplegada y funcionando
+## Infrastructure Verification
 
 ![Consola Lambda](docs/images/lambda-console.png)
 ![Consola Lambda](docs/images/lambda-permissions.png)
-*Función Lambda con el rol IAM asignado y runtime Python 3.12.*
+*Lambda function with the IAM role assigned and Python 3.12 runtime.*
 
-![Variables de entorno](docs/images/lambda-env-vars.png)
-*Variable de entorno `TABLE_NAME` inyectada desde Terraform, sin hardcodear en el código.*
+![Environment Variables](docs/images/lambda-env-vars.png)
+*The `TABLE_NAME` environment variable is injected from Terraform, rather than being hardcoded in the code.*
 
-![Rutas de API Gateway](docs/images/api-gateway-routes.png)
-*Las dos rutas (`POST /links`, `GET /{short_code}`) apuntando a la misma integración.*
+![Routes API Gateway](docs/images/api-gateway-routes.png)
+*The two routes (`POST /links`, `GET /{short_code}`) point to the same integration.*
 
-![Ítems en DynamoDB](docs/images/dynamo-items.png)
-*Ítem real creado durante las pruebas, con `click_count` incrementado.*
+![DynamoDB Items](docs/images/dynamo-items.png)
+*A real item created during testing, with `click_count` incremented.*
 
-## Prueba de que funciona de verdad
 
 ```bash
-# Crear una URL corta
+# Create a short URL / Crear una URL corta [$API_URL == api_endpoint]
 curl -i -X POST "$API_URL/links" \
   -H "Content-Type: application/json" \
   -d '{"long_url": "https://www.linkedin.com/in/miguel-amoros-moret"}'
-# → HTTP/2 201, body: {"short_code": "ti2f6Z"}
+# → HTTP/2 201, body: {"short_code": "w9u8wX"}
 
-# Visitar la URL corta
-curl -i "$API_URL/ti2f6Z"
+# Visit the short URL / Visitar la URL corta
+curl -i "$API_URL/w9u8wX"
 # → HTTP/2 301, location: https://www.linkedin.com/in/miguel-amoros-moret
 ```
-![Pruebas curl](docs/images/curl.png)
+![Test curl](docs/images/curl.png)
 
 ```bash
-# Probar un código inexistente
-curl -i "$API_URL/noexiste123"
+# Test with a unknow code / Probar un código inexistente
+curl -i "$API_URL/notexist"
 # → HTTP/2 404, {"error": "short_code not found"}
 ```
-![Pruebas curl](docs/images/curl2.png)
+![Test curl](docs/images/curl2.png)
 
 ```bash
-# Verificar el contador de clics tras varias visitas
+# Check click's count / Verificar el contador de clics tras varias visitas
 aws dynamodb get-item \
   --table-name url-shortener-dev-links \
-  --key '{"short_code": {"S": "ti2f6Z"}}' \
+  --key '{"short_code": {"S": "w9u8wX"}}' \
   --profile personal
 # → click_count incrementado correctamente, sin pérdidas bajo visitas repetidas
 ```
-![Pruebas curl](docs/images/curl3.png)
+![Test curl](docs/images/curl3.png)
 
-## Lo que no salió a la primera y cómo lo arreglé (troubleshooting)
 
-**1. `terraform init` fallaba con "No valid credential sources found"**
-El bloque `backend "s3"` no puede leer variables de Terraform (`var.aws_profile`), porque se procesa antes de que las variables estén disponibles. Sin `profile` explícito, Terraform caía a la cadena de credenciales por defecto e intentaba usar IMDS (propio de instancias EC2), inexistente en WSL. Solución: añadir `profile = "personal"` como valor literal directamente en `backend.tf`.
+## How to install and run the project
 
-**2. Warning `dynamodb_table` deprecado**
-AWS provider recomienda migrar el locking a `use_lockfile` (nativo de S3). Se mantiene `dynamodb_table` intencionadamente por consistencia con el backend ya existente del Proyecto 2, que usa el mismo mecanismo — cambiarlo aquí generaría inconsistencia entre ambos proyectos sin beneficio real.
++ Clone the repository:
+```bash
+git clone git@github.com:mamoros-dev/aws-serverless-url-shortener.git
+cd aws-serverless-url-shortener
 
-**3. La Lambda no interpretaba correctamente las peticiones de API Gateway**
-Las HTTP API usan por defecto `payload_format_version = "2.0"`, cuya forma de evento (`event["requestContext"]["http"]["method"]`) es distinta del formato clásico que asume el código (`event["httpMethod"]`, `event["path"]`). Solución: fijar explícitamente `payload_format_version = "1.0"` en la integración, compatible con el formato de evento que ya usa el handler.
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars with your values if they differ from the example
+
+terraform init
+terraform plan
+terraform apply
+```
+
++ Get the API's public URL:
+```bash
+terraform output api_endpoint
+```
+
++ To tear down the infrastructure:
+```bash
+terraform destroy
+```
+
+## How to use the project
+
+| Method | Route | Description |
+|---|---|---|
+| `POST` | `/links` | Creates a short URL. Body: `{"long_url": "https://..."}` |
+| `GET` | `/{short_code}` | Redirects (301) to the associated long URL and increments the click counter |
+
++ Create and visit a short URL:
+```bash
+# Create a short URL
+curl -i -X POST "$API_URL/links" \
+  -H "Content-Type: application/json" \
+  -d '{"long_url": "https://www.linkedin.com/in/your-profile"}'
+
+# Visit the short URL (follow the redirect with -L)
+curl -iL "$API_URL/<short_code>"
+```
 
 ## Stack
 
-| Componente | Servicio AWS | Detalle |
-|---|---|---|
-| Cómputo | AWS Lambda | Python 3.12 |
-| API pública | API Gateway | HTTP API (v2) |
-| Base de datos | DynamoDB | Tabla `links`, `PAY_PER_REQUEST` |
-| Permisos | IAM | Rol scoped, mínimo privilegio |
-| Observabilidad | CloudWatch Logs | Logs de acceso (API Gateway) y de ejecución (Lambda) |
-| IaC | Terraform | Backend remoto S3 + DynamoDB, compartido con Proyecto 2 |
++ AWS Lambda (Python 3.12) · API Gateway (HTTP API) · DynamoDB · IAM · CloudWatch Logs · Terraform
 
-## Estado
+## Status
++ ✅ Complete project — design, infrastructure, code, integration, end-to-end testing, and documentation.
 
-+ ✅ Proyecto completo — Bloques 0 a 10 finalizados: diseño, infraestructura, código, integración, pruebas end-to-end y documentación.
++ Infrastructure is destroyed after the final documentation (`terraform destroy`) to avoid unnecessary costs. It can be recreated in minutes with `terraform apply` by following the deployment steps.
 
-+ Infraestructura destruida tras la documentación final (`terraform destroy`) para evitar costes innecesarios. Se puede recrear en minutos con `terraform apply` siguiendo los pasos de despliegue.
-
-
-## Despliegue
-
-+ Clonación del repositorio:
-  ```bash
-  git clone git@github.com:mamoros-dev/aws-serverless-url-shortener.git
-  cd aws-serverless-url-shortener
-
-  cp terraform.tfvars.example terraform.tfvars
-
-  terraform init
-  terraform plan
-  terraform apply
-
-  terraform output api_endpoint
-  ```
-
-+ Para destruir la infraestructura:
-  ```bash
-  terraform destroy
-  ```
-
-
-## Autor
+## Author
 
 + Miguel — [GitHub](https://github.com/mamoros-dev) · [LinkedIn](https://www.linkedin.com/in/miguel-amoros-moret/)

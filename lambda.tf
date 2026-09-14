@@ -1,3 +1,5 @@
+# --- Resource for Lambda Function for URL Shortener ---
+# --- Recurso para la Función Lambda para el Acortador de URLs ---
 data "archive_file" "url_shortener" {
   type        = "zip"
   source_dir  = "${path.module}/lambda/url_shortener"

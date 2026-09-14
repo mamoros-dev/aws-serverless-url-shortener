@@ -1,3 +1,5 @@
+# --- Terraform provider configuration for AWS Serverless URL Shortener ---
+# --- Configuración del proveedor de Terraform para el Acortador de URLs Serverless en AWS ---
 terraform {
   required_version = ">= 1.9.0"
 

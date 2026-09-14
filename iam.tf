@@ -1,3 +1,6 @@
+# --- IAM Role and Policies for Lambda Function ---
+# --- Rol y Políticas de IAM para la Función Lambda ---
+# 1. Trust Policy: who can assume this role
 # 1. Trust Policy: quién puede asumir este rol
 data "aws_iam_policy_document" "lambda_assume_role" {
   statement {
@@ -22,6 +25,7 @@ resource "aws_iam_role" "lambda_exec" {
   }
 }
 
+# 2. Permissions Policy: what it can do on DynamoDB
 # 2. Permissions Policy: qué puede hacer sobre DynamoDB
 data "aws_iam_policy_document" "lambda_dynamodb" {
   statement {
@@ -41,6 +45,7 @@ resource "aws_iam_role_policy" "lambda_dynamodb" {
   policy = data.aws_iam_policy_document.lambda_dynamodb.json
 }
 
+# 3. Permissions for CloudWatch Logs (AWS managed policy)
 # 3. Permisos de CloudWatch Logs (política gestionada por AWS)
 resource "aws_iam_role_policy_attachment" "lambda_logs" {
   role       = aws_iam_role.lambda_exec.name
