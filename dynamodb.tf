@@ -1,3 +1,5 @@
+# --- DynamoDB Table for URL Shortener ---
+# --- Tabla de DynamoDB para el Acortador de URLs ---
 resource "aws_dynamodb_table" "links" {
   name         = "${var.project_name}-${var.environment}-links"
   billing_mode = "PAY_PER_REQUEST"
